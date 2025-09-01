@@ -1,0 +1,89 @@
+<html>
+  <head>
+    <title>HOMBREW</title>
+  </head>
+  <body>
+    <h1>HOMEBREW</h1>
+    <p><span id="mode">--</span> <button id="modeBtn">mode</button></p>
+    <p>
+      Target: <span id="target">--</span> &deg;C
+      <button id="incTarget">+</button>
+      <button id="decTarget">-</button>
+    </p>
+    <p>
+      Offset: <span id="offset">--</span> &deg;C
+      <button id="incOffset">+</button>
+      <button id="decOffset">-</button>
+    </p>
+    <p>Current: <span id="temp">--</span> &deg;C</p>
+    <p>Relay: <span id="relay">--</span> &deg;C</p>
+    <p style="display: none">Wait: <span id="wait">0</span> min</p>
+    <script>
+      let mode = 'Freezer';
+      let target = 0;
+      let temp = 0;
+      let offset = 0;
+      let relay = 'OFF';
+      let wait = 0;
+
+      const fetchData = async (url) => {
+        const response = await fetch(url);
+        if (!response.ok) {
+          console.error('Failed', url);
+          return;
+        }
+
+        const data = await response.json();
+
+        mode = data.mode === 1 ? 'Freezer' : 'Boiler';
+        target = data.target ?? 0;
+        temp = data.temp ?? 0;
+        offset = data.offset ?? 0;
+        relay = data.relay === 1 ? 'ON' : 'OFF';
+        wait = data.wait ?? 0;
+
+        document.getElementById('mode').textContent = mode;
+        document.getElementById('target').textContent = target;
+        document.getElementById('temp').textContent = temp;
+        document.getElementById('offset').textContent = offset;
+        document.getElementById('relay').textContent = relay;
+        if (!wait || mode === 'Boiler') {
+          document.getElementById('wait').parentElement.style.display = 'none';
+        } else {
+          document.getElementById('wait').parentElement.style.display = 'block';
+          document.getElementById('wait').textContent = wait;
+        }
+      };
+
+      const incTargetBtn = document.getElementById('incTarget');
+      const decTargetBtn = document.getElementById('decTarget');
+      const incOffsetBtn = document.getElementById('incOffset');
+      const decOffsetBtn = document.getElementById('decOffset');
+      const modeBtn = document.getElementById('modeBtn');
+
+      incOffsetBtn.onclick = async () => {
+        fetchData('/offset/inc');
+      };
+
+      decOffsetBtn.onclick = async () => {
+        fetchData('/offset/dec');
+      };
+
+      incTargetBtn.onclick = async () => {
+        fetchData('/target/inc');
+      };
+
+      decTargetBtn.onclick = async () => {
+        fetchData('/target/dec');
+      };
+
+      modeBtn.onclick = async () => {
+        fetchData('/mode');
+      };
+
+      setInterval(() => {
+        fetchData('/data');
+      }, 1000);
+    </script>
+  </body>
+</html>
