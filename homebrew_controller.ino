@@ -1,10 +1,12 @@
-// #include "SPIFFS.h"
 #include <ArduinoJson.h>
 #include <DNSServer.h>
 #include <DallasTemperature.h>
 #include <OneWire.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <Preferences.h>
+
+Preferences preferences;
 
 const byte DNS_PORT = 53;
 const char *ssid = "HOMEBREW";
@@ -21,22 +23,22 @@ OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 DeviceAddress sensor1; // Variables to hold sensor addresses
 
-long prevLoop = 0;
+// setting variables
 int freezerMode = 0; // 0=off, 1=on
-
-float temp = 0.0;
 float tempTarget = 60.0;
 float offset = 1.0;
+
+// runtime variables
+long now = 0;
+long waitTime = 5 * 60 * 1000; // 5 minutes in milis
+int waitingMinutes = 0;
+long prevOffTime = 0;
+long prevLoop = 0;
+float temp = 0.0;
 float minTemp = tempTarget - offset;
 float maxTemp = tempTarget + offset;
 int relayState = LOW;
 
-long prevOffTime = 0;
-long now = 0;
-long waitTime = 5 * 60 * 1000; // 5 minutes in milis
-int waitingMinutes = 0;
-
-String htmlContent = "";
 
 void handleRoot() {
   webServer.send(
@@ -158,18 +160,44 @@ void handleRoot() {
 }
 
 void readTemp() {
-
   sensors.requestTemperatures(); // Request temp readings from all sensors
-
   float tempSensor = sensors.getTempC(sensor1);
-
   if (tempSensor != DEVICE_DISCONNECTED_C) {
     temp = tempSensor;
-    //   Serial.print("Sensor 1: ");
-    //   Serial.print(tempSensor, 2); // Print with 2 decimals
-    //   Serial.println(" °C");
   }
 }
+
+void updateMinMax() {
+  minTemp = tempTarget - offset;
+  maxTemp = tempTarget + offset;
+}
+
+void setMode(int newMode){
+  freezerMode = newMode;
+  relayState = LOW; // turn off relay when mode changes
+  digitalWrite(RELAY_PIN, relayState);
+  preferences.begin("appdata", false); // Open for write
+  preferences.putInt("mode", freezerMode);    // Save new mode
+  preferences.end();
+  prevOffTime = millis();
+}
+
+void setTarget(float target){
+  tempTarget = target;
+  updateMinMax();
+  preferences.begin("appdata", false); // Open for write
+  preferences.putFloat("target", tempTarget);    // Save new target
+  preferences.end();
+}
+
+void setOffset(float newOffset){
+  offset = newOffset;
+  updateMinMax();
+  preferences.begin("appdata", false); // Open for write
+  preferences.putFloat("offset", offset);    // Save new offset
+  preferences.end();
+}
+
 
 void freezer() {
   // when millis() overflows it restarts from 0, prevOffTime is in the future
@@ -182,7 +210,8 @@ void freezer() {
 
   waitingMinutes = 0;
 
-  if (temp < minTemp && relayState == HIGH) {
+  // we use the max as threshold to turn off the relay, probably the temp will sill go down for a few minutes
+  if (temp <= maxTemp && relayState == HIGH) {
     relayState = LOW;
     prevOffTime = now;
   } else if (temp > maxTemp && relayState == LOW) {
@@ -241,11 +270,6 @@ void boiler() {
   Serial.print("Current: ");
   Serial.print(temp, 2);
   Serial.print("°C | ");
-  // Serial.print("min: ");
-  // Serial.print(minTemp, 2);
-  // Serial.print("°C, max: ");
-  // Serial.print(maxTemp, 2);
-  // Serial.print("°C | ");
   Serial.print("Relay: ");
   Serial.print(relayState == HIGH ? "ON" : "OFF");
   Serial.println();
@@ -266,44 +290,36 @@ String generateJSON() {
 }
 
 void setup() {
+  // serial -----------------------------------------
   Serial.begin(19200);
+  // pins -------------------------------------------
+  pinMode(RELAY_PIN, OUTPUT);
+  // preferences ------------------------------------
+  preferences.begin("appdata", false);
+  freezerMode = preferences.getInt("mode", 0); // Get persisted mode (default 0)
+  tempTarget = preferences.getFloat("target", 60.0); // Get persisted target (default 60.0)
+  offset = preferences.getFloat("offset", 1.0); // Get persisted offset (default 1.0)
+  preferences.end();
 
-  // Initialize SPIFFS
-  // if (!SPIFFS.begin(true)) {
-  //   Serial.println("An error occurred while mounting SPIFFS");
-  //   return;
-  // }
+  updateMinMax();
 
-  // // Read HTML file into a string
-  // File file = SPIFFS.open("/index.html", "r");
-  // if (!file) {
-  //   Serial.println("Failed to open file");
-  //   return;
-  // }
 
-  // htmlContent = file.readString();
-  // file.close();
-
+  // sensors ----------------------------------------
   sensors.begin();
-
   if (!sensors.getAddress(sensor1, 0)) {
     Serial.println("Sensor 1 not found!");
   }
-
   // Optionally set resolution for accuracy (9 to 12 bits)
   // this sets how precise the temperature readings are
   // 9 bits = 0.5°C, 10 bits = 0.25°C, 11 bits = 0.125°C, 12 bits = 0.0625°C
   sensors.setResolution(sensor1, 9);
-
+  // wifi -------------------------------------------
   // Set ESP32 as Access Point
   WiFi.softAP(ssid, password);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
-
   Serial.println("Access Point started");
   Serial.print("IP address: ");
   Serial.println(apIP);
-
-  pinMode(RELAY_PIN, OUTPUT);
 
   // Start DNS server to redirect all queries to ESP32 IP (captive portal)
   dnsServer.start(DNS_PORT, "*", apIP);
@@ -323,28 +339,24 @@ void setup() {
   });
 
   webServer.on("/offset/inc", HTTP_GET, []() {
-    offset += 0.5;
-    updateMinMax();
+    setOffset(offset + 0.5);
     webServer.send(200, "application/json", generateJSON());
   });
 
   webServer.on("/offset/dec", HTTP_GET, []() {
     if (offset > 0.5) {
-      offset -= 0.5;
+      setOffset(offset - 0.5);
     }
-    updateMinMax();
     webServer.send(200, "application/json", generateJSON());
   });
 
   webServer.on("/target/inc", HTTP_GET, []() {
-    tempTarget += 0.5;
-    updateMinMax();
+    setTarget(tempTarget + 0.5);
     webServer.send(200, "application/json", generateJSON());
   });
 
   webServer.on("/target/dec", HTTP_GET, []() {
-    tempTarget -= 0.5;
-    updateMinMax();
+    setTarget(tempTarget - 0.5);
     webServer.send(200, "application/json", generateJSON());
   });
 
@@ -370,28 +382,19 @@ void setup() {
     }
 
     float newTarget = jsonDoc["target"];
-    tempTarget = newTarget;
-
-    updateMinMax();
+    setTarget(newTarget);
 
     webServer.send(200, "application/json", generateJSON());
   });
 
   webServer.on("/mode/toggle", HTTP_GET, []() {
-    freezerMode = 1 - freezerMode;
-    relayState = LOW; // turn off relay when mode changes
-    digitalWrite(RELAY_PIN, relayState);
-    prevOffTime = millis();
+    setMode(1 - freezerMode);
     webServer.send(200, "application/json", generateJSON());
   });
 
   webServer.begin();
 }
 
-void updateMinMax() {
-  minTemp = tempTarget - offset;
-  maxTemp = tempTarget + offset;
-}
 
 void loop() {
   now = millis();
